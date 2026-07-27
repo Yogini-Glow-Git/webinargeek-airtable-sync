@@ -32,6 +32,14 @@ const REGISTRATION_EVENTS = new Set(
 );
 
 const app = express();
+
+// Generelles Request-Log VOR allem anderen - damit Verbindungstests (GET/HEAD/OPTIONS
+// von WebinarGeek o.ae.), die von keiner Route erfasst werden, trotzdem im Log auftauchen.
+app.use((req, _res, next) => {
+  console.log(`[http] ${req.method} ${req.originalUrl} - UA: ${req.get("user-agent") || "-"}`);
+  next();
+});
+
 app.use(
   express.json({
     limit: "1mb",
@@ -42,6 +50,12 @@ app.use(
 );
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
+
+// Manche Webhook-Anbieter pruefen die Erreichbarkeit vorab per GET/HEAD auf dieselbe
+// URL, bevor sie das erste echte Event schicken. Beides hier freundlich beantworten,
+// damit so ein "Verbindungstest" nicht faelschlich als Fehler gewertet wird.
+app.get("/webhooks/webinargeek", (_req, res) => res.status(200).json({ ok: true }));
+app.head("/webhooks/webinargeek", (_req, res) => res.sendStatus(200));
 
 function verifySignature(req) {
   if (!WEBINARGEEK_WEBHOOK_SECRET) return true; // s.o. - bewusst nur fuer lokales Testen
