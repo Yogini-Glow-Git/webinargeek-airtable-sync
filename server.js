@@ -57,18 +57,45 @@ app.get("/health", (_req, res) => res.json({ ok: true }));
 app.get("/webhooks/webinargeek", (_req, res) => res.status(200).json({ ok: true }));
 app.head("/webhooks/webinargeek", (_req, res) => res.sendStatus(200));
 
+function computeHex(body) {
+  return crypto.createHmac("sha256", WEBINARGEEK_WEBHOOK_SECRET).update(body).digest("hex");
+}
+function computeBase64(body) {
+  return crypto.createHmac("sha256", WEBINARGEEK_WEBHOOK_SECRET).update(body).digest("base64");
+}
+
+function safeEqual(a, b) {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+// Liefert true/false, und loggt bei Fehlschlag ALLE Header + die selbst berechneten
+// Signaturen (hex/base64/mit "sha256="-Praefix) zum Abgleich - bis der exakte
+// Header-Name und das Format von WebinarGeek einmal real bestaetigt sind.
 function verifySignature(req) {
   if (!WEBINARGEEK_WEBHOOK_SECRET) return true; // s.o. - bewusst nur fuer lokales Testen
-  const signature = req.get("Signature") || req.get("signature");
-  if (!signature) return false;
-  const expected = crypto
-    .createHmac("sha256", WEBINARGEEK_WEBHOOK_SECRET)
-    .update(req.rawBody)
-    .digest("hex");
-  const a = Buffer.from(signature);
-  const b = Buffer.from(expected);
-  if (a.length !== b.length) return false;
-  return crypto.timingSafeEqual(a, b);
+
+  const candidates = [
+    req.get("Signature"),
+    req.get("X-Webinargeek-Signature"),
+    req.get("X-Signature"),
+    req.get("X-Hub-Signature-256"),
+    req.get("X-Hub-Signature"),
+  ].filter(Boolean);
+
+  const hex = computeHex(req.rawBody);
+  const base64 = computeBase64(req.rawBody);
+  const validValues = new Set([hex, base64, `sha256=${hex}`, `sha256=${base64}`]);
+
+  const matched = candidates.some((c) => [...validValues].some((v) => v.length === c.length && safeEqual(v, c)));
+
+  if (!matched) {
+    console.warn("[wg-webhook] Signatur-Check fehlgeschlagen. Alle Header:", JSON.stringify(req.headers));
+    console.warn("[wg-webhook] erwartet hex:", hex, "| base64:", base64);
+  }
+  return matched;
 }
 
 app.post("/webhooks/webinargeek", async (req, res) => {
