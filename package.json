@@ -1,0 +1,14 @@
+{
+  "name": "webinargeek-airtable-sync",
+  "version": "1.0.0",
+  "description": "Empfaengt WebinarGeek-Webhooks (New Registration) und schreibt direkt in Airtable (appVOaD792Y5oQsu5) - ersetzt den Zapier-Zap 'WebinarGeek Registration -> Leads'.",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
