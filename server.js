@@ -1,11 +1,13 @@
 import express from "express";
 import crypto from "node:crypto";
 import { processRegistration } from "./lib/registration.js";
+import { processFormSubmitted } from "./lib/leadMagnet.js";
 import { alertFailure } from "./lib/alert.js";
 
 const {
   PORT = 3000,
   WEBINARGEEK_WEBHOOK_SECRET,
+  EASY2_WEBHOOK_SECRET,
   AIRTABLE_TOKEN,
   AIRTABLE_BASE_ID,
   // Komma-getrennte Liste erlaubter Event-Namen fuer "New registration".
@@ -24,6 +26,12 @@ if (!WEBINARGEEK_WEBHOOK_SECRET) {
   console.warn(
     "WARNUNG: WEBINARGEEK_WEBHOOK_SECRET ist nicht gesetzt - Signatur-Pruefung ist AUS. " +
       "Nur fuer lokales Testen akzeptabel, niemals so live schalten."
+  );
+}
+if (!EASY2_WEBHOOK_SECRET) {
+  console.warn(
+    "WARNUNG: EASY2_WEBHOOK_SECRET ist nicht gesetzt - Signatur-Pruefung fuer den " +
+      "Easy2-Webhook ist AUS. Nur fuer lokales Testen akzeptabel, niemals so live schalten."
   );
 }
 
@@ -57,11 +65,11 @@ app.get("/health", (_req, res) => res.json({ ok: true }));
 app.get("/webhooks/webinargeek", (_req, res) => res.status(200).json({ ok: true }));
 app.head("/webhooks/webinargeek", (_req, res) => res.sendStatus(200));
 
-function computeHex(body) {
-  return crypto.createHmac("sha256", WEBINARGEEK_WEBHOOK_SECRET).update(body).digest("hex");
+function computeHex(secret, body) {
+  return crypto.createHmac("sha256", secret).update(body).digest("hex");
 }
-function computeBase64(body) {
-  return crypto.createHmac("sha256", WEBINARGEEK_WEBHOOK_SECRET).update(body).digest("base64");
+function computeBase64(secret, body) {
+  return crypto.createHmac("sha256", secret).update(body).digest("base64");
 }
 
 function safeEqual(a, b) {
@@ -71,31 +79,40 @@ function safeEqual(a, b) {
   return crypto.timingSafeEqual(bufA, bufB);
 }
 
-// Liefert true/false, und loggt bei Fehlschlag ALLE Header + die selbst berechneten
-// Signaturen (hex/base64/mit "sha256="-Praefix) zum Abgleich - bis der exakte
-// Header-Name und das Format von WebinarGeek einmal real bestaetigt sind.
-function verifySignature(req) {
-  if (!WEBINARGEEK_WEBHOOK_SECRET) return true; // s.o. - bewusst nur fuer lokales Testen
+// Generische Signatur-Pruefung fuer beide Webhooks (WebinarGeek + Easy2). Beide
+// Anbieter dokumentieren den genauen Header-Namen/Format nicht zuverlaessig -
+// deshalb pruefen wir mehrere plausible Kandidaten-Header und -Formate, und
+// loggen bei Fehlschlag ALLE Header + die selbst berechneten Signaturen zum
+// Abgleich, bis der exakte Header/Format einmal real bestaetigt ist (siehe
+// README "Offener Punkt: exakter Event-Name" fuer das gleiche Muster bei WG).
+function verifySignatureGeneric(req, secret, label) {
+  if (!secret) return true; // s.o. - bewusst nur fuer lokales Testen
 
   const candidates = [
     req.get("Signature"),
     req.get("X-Webinargeek-Signature"),
+    req.get("X-Easy2-Signature"),
+    req.get("X-Webhook-Signature"),
     req.get("X-Signature"),
     req.get("X-Hub-Signature-256"),
     req.get("X-Hub-Signature"),
   ].filter(Boolean);
 
-  const hex = computeHex(req.rawBody);
-  const base64 = computeBase64(req.rawBody);
+  const hex = computeHex(secret, req.rawBody);
+  const base64 = computeBase64(secret, req.rawBody);
   const validValues = new Set([hex, base64, `sha256=${hex}`, `sha256=${base64}`]);
 
   const matched = candidates.some((c) => [...validValues].some((v) => v.length === c.length && safeEqual(v, c)));
 
   if (!matched) {
-    console.warn("[wg-webhook] Signatur-Check fehlgeschlagen. Alle Header:", JSON.stringify(req.headers));
-    console.warn("[wg-webhook] erwartet hex:", hex, "| base64:", base64);
+    console.warn(`[${label}] Signatur-Check fehlgeschlagen. Alle Header:`, JSON.stringify(req.headers));
+    console.warn(`[${label}] erwartet hex:`, hex, "| base64:", base64);
   }
   return matched;
+}
+
+function verifySignature(req) {
+  return verifySignatureGeneric(req, WEBINARGEEK_WEBHOOK_SECRET, "wg-webhook");
 }
 
 app.post("/webhooks/webinargeek", async (req, res) => {
@@ -135,6 +152,51 @@ app.post("/webhooks/webinargeek", async (req, res) => {
       error: err?.message,
     });
     // 500 zurueckgeben, falls WebinarGeek fehlgeschlagene Zustellungen retried.
+    return res.status(500).json({ error: "processing failed" });
+  }
+});
+
+// Manche Webhook-Anbieter pruefen die Erreichbarkeit vorab per GET/HEAD.
+app.get("/webhooks/easy2", (_req, res) => res.status(200).json({ ok: true }));
+app.head("/webhooks/easy2", (_req, res) => res.sendStatus(200));
+
+app.post("/webhooks/easy2", async (req, res) => {
+  if (!verifySignatureGeneric(req, EASY2_WEBHOOK_SECRET, "easy2-webhook")) {
+    console.warn("[easy2-webhook] ungueltige/fehlende Signatur - abgelehnt.");
+    return res.status(401).json({ error: "invalid signature" });
+  }
+
+  const body = req.body || {};
+  const { event } = body;
+  // Volles Payload IMMER loggen (auch bei bekannten Events) - Webhook-Form von
+  // Easy2 ist bisher NICHT an einem echten Event verifiziert, siehe lib/leadMagnet.js.
+  console.log(`[easy2-webhook] event="${event}" payload:`, JSON.stringify(body));
+
+  try {
+    if (event === "form_submitted") {
+      // Easy2 schickt beim Contact-Objekt vermutlich entweder das Contact direkt
+      // oder unter "contact"/"data" verschachtelt - beide Faelle abdecken.
+      const contact = body.contact || body.data || body;
+      const result = await processFormSubmitted(contact);
+      console.log(`[easy2-webhook] form_submitted ok:`, result);
+      return res.status(200).json({ ok: true, ...result });
+    }
+
+    if (event === "booking_created") {
+      // Calls-Erstellung (naechster Schritt, noch nicht gebaut) - bewusst nur
+      // loggen statt schreiben, siehe Projekt-Notiz: Closer/Qualifier-Mapping
+      // erst nach echtem Payload-Abgleich verifizieren.
+      console.log(`[easy2-webhook] booking_created noch nicht verarbeitet (Calls-Logik folgt) - nur geloggt.`);
+      return res.status(200).json({ ignored: true, reason: "booking_created not yet implemented" });
+    }
+
+    console.log(`[easy2-webhook] ignoriere unbehandeltes event="${event}"`);
+    return res.status(200).json({ ignored: true, reason: "event" });
+  } catch (err) {
+    await alertFailure("Verarbeitung eines Easy2-Webhooks fehlgeschlagen", {
+      event,
+      error: err?.message,
+    });
     return res.status(500).json({ error: "processing failed" });
   }
 });
