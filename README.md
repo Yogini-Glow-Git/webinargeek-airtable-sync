@@ -22,7 +22,14 @@ Finanz-Dashboard-Projekt) durch direkte Webhook-Empfänger auf einem Service:
     sich nach jedem Webinar automatisch auf den nächsten Termin um). Löst
     danach automatisch den bestehenden `/webhooks/webinargeek`-Endpoint aus
     (WebinarGeeks eigenes "New registration"-Webhook), der den Lead in
-    Airtable anlegt — kein separater Airtable-Write hier nötig.
+    Airtable anlegt — kein separater Airtable-Write hier nötig. Setzt danach
+    zusätzlich den Tag `Web_{Tag}{Monat}{Jahr}_angemeldet` (z.B.
+    `Web_30Aug26_angemeldet`, dynamisch aus dem gefundenen Termin gebaut,
+    aktuellste beobachtete Konvention) auf dem Easy2-Kontakt via `POST
+    /contacts` — additiver Upsert, überschreibt keine bestehenden
+    Tags/Listen (live verifiziert 2026-08-08). Ersetzt damit auch das manuelle
+    Nachpflegen dieses Tag-Strings, das vorher pro Webinar-Zyklus in der
+    Zap-Config nötig war.
   - **Läuft parallel im Shadow-Modus** zu den bestehenden Zaps — Airtable-
     Upserts sind idempotent auf `lead_id`; WebinarGeek ist laut eigener
     API-Doku bei Doppel-Registrierung (gleiche Email + gleicher Termin)
