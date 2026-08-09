@@ -2,12 +2,17 @@ import express from "express";
 import crypto from "node:crypto";
 import { processRegistration } from "./lib/registration.js";
 import { processFormSubmitted } from "./lib/leadMagnet.js";
+import { registerForNextBroadcast } from "./lib/webinarRegistration.js";
 import { alertFailure } from "./lib/alert.js";
 
 const {
   PORT = 3000,
   WEBINARGEEK_WEBHOOK_SECRET,
+  WEBINARGEEK_API_TOKEN,
   EASY2_WEBHOOK_SECRET,
+  // Easy2-Subscriber-Liste, die "hat sich fuers Webinar angemeldet" signalisiert
+  // (live verifiziert 2026-08-08 an echten Kontakten: Liste "8. Webinar Anmeldung").
+  EASY2_WEBINAR_SIGNUP_LIST_ID = "238677122",
   AIRTABLE_TOKEN,
   AIRTABLE_BASE_ID,
   // Komma-getrennte Liste erlaubter Event-Namen fuer "New registration".
@@ -34,6 +39,16 @@ if (!EASY2_WEBHOOK_SECRET) {
       "Easy2-Webhook ist AUS. Nur fuer lokales Testen akzeptabel, niemals so live schalten."
   );
 }
+if (!WEBINARGEEK_API_TOKEN) {
+  console.warn(
+    "WARNUNG: WEBINARGEEK_API_TOKEN ist nicht gesetzt - Webinar-Anmeldungen ueber " +
+      "die API (Ersatz fuer 'Easy2 to Webinargeek Anmeldung') werden NICHT verarbeitet, " +
+      "nur geloggt."
+  );
+}
+const EASY2_WEBINAR_SIGNUP_LISTS = new Set(
+  EASY2_WEBINAR_SIGNUP_LIST_ID.split(",").map((s) => Number(s.trim())).filter(Boolean)
+);
 
 const REGISTRATION_EVENTS = new Set(
   WG_REGISTRATION_EVENTS.split(",").map((s) => s.trim()).filter(Boolean)
@@ -183,9 +198,28 @@ app.post("/webhooks/easy2", async (req, res) => {
       // Real bestaetigtes Payload-Format: Contact steckt unter body.contact
       // (nicht direkt im Body wie urspruenglich angenommen).
       const contact = body.contact || body.data || body;
-      const result = await processFormSubmitted(contact);
-      console.log(`[easy2-webhook] form_submitted ok:`, result);
-      return res.status(200).json({ ok: true, ...result });
+      const results = {};
+
+      const lists = contact.subscriberLists || contact.subscriberListIds || [];
+      const isWebinarSignup = lists.some((id) => EASY2_WEBINAR_SIGNUP_LISTS.has(id));
+
+      if (isWebinarSignup) {
+        // Ersetzt "Easy2 to Webinargeek Anmeldung": registriert direkt per API
+        // fuer den naechsten Termin des Haupt-Webinars, statt via Zapier. Laeuft
+        // parallel zum bestehenden Zap (WebinarGeek ist bei Doppel-Registrierung
+        // gleiche Email+Termin idempotent, siehe lib/webinarRegistration.js).
+        if (!WEBINARGEEK_API_TOKEN) {
+          console.log(`[easy2-webhook] Webinar-Anmeldung erkannt, aber WEBINARGEEK_API_TOKEN fehlt - nur geloggt:`, contact.email);
+          results.webinarRegistration = { skipped: true, reason: "no WEBINARGEEK_API_TOKEN" };
+        } else {
+          results.webinarRegistration = await registerForNextBroadcast(contact);
+          console.log(`[easy2-webhook] Webinar-Registrierung ok:`, results.webinarRegistration);
+        }
+      }
+
+      results.leadMagnet = await processFormSubmitted(contact);
+      console.log(`[easy2-webhook] form_submitted ok:`, results);
+      return res.status(200).json({ ok: true, ...results });
     }
 
     if (event === "booking_created") {

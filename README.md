@@ -8,17 +8,30 @@ Finanz-Dashboard-Projekt) durch direkte Webhook-Empfänger auf einem Service:
   UTM-Fallback (`direct`/`none`/`direct-organic`), Campaign- und
   Webinar-Find-or-Create, Lead-Upsert auf `lead_id = {wg_id}_{datum}_{email}`.
   **Live, alter Zap ist aus.**
-- **`POST /webhooks/easy2`** — ersetzt **"Easy2 yogareport+LM → Airtable
-  Lead"** + **"Easy2 Warteliste+LM → Airtable Lead"** (zusammen ~231
-  Tasks/Monat). Lead-Upsert auf `lead_id = easy2_{email}`, `funnel_type =
-  easy2_direct`, `lead_magnet` je Easy2-Liste. **Läuft parallel im
-  Shadow-Modus** zum bestehenden Zapier-Webhook auf `easy2toolbox.de` — beide
-  schreiben idempotent auf denselben `lead_id`, keine Duplikate. Noch NICHT
-  gebaut: `booking_created` → Calls (ersetzt "Easy2 Termin Webinartermin to
-  Airtable", 29 Tasks) — wird aktuell nur geloggt, siehe unten.
+- **`POST /webhooks/easy2`** (Event `form_submitted`) — zwei unabhängige
+  Aktionen pro eingehendem Contact, je nach Easy2-Liste:
+  - Liste `178254506`/`105659590` (Ausbildungsbroschüre/YogaReport) → ersetzt
+    **"Easy2 yogareport+LM → Airtable Lead"** + **"Easy2 Warteliste+LM →
+    Airtable Lead"** (zusammen ~231 Tasks/Monat, siehe `lib/leadMagnet.js`).
+    Lead-Upsert auf `lead_id = easy2_{email}`.
+  - Liste `238677122` ("8. Webinar Anmeldung") → ersetzt **"Easy2 to
+    Webinargeek Anmeldung"** (183 Tasks/Monat, größter Einzelposten, siehe
+    `lib/webinarRegistration.js`): registriert direkt per WebinarGeek-API für
+    den **nächsten** Termin des einen dauerhaft aktiven Webinars (Id
+    `517362`, dynamisch ermittelt — kein Hardcoding eines Datums, "datet"
+    sich nach jedem Webinar automatisch auf den nächsten Termin um). Löst
+    danach automatisch den bestehenden `/webhooks/webinargeek`-Endpoint aus
+    (WebinarGeeks eigenes "New registration"-Webhook), der den Lead in
+    Airtable anlegt — kein separater Airtable-Write hier nötig.
+  - **Läuft parallel im Shadow-Modus** zu den bestehenden Zaps — Airtable-
+    Upserts sind idempotent auf `lead_id`; WebinarGeek ist laut eigener
+    API-Doku bei Doppel-Registrierung (gleiche Email + gleicher Termin)
+    ebenfalls idempotent ("silently skip"), kein Doppel-Versand-Risiko.
+  - Noch NICHT gebaut: `booking_created` → Calls (ersetzt "Easy2 Termin
+    Webinartermin to Airtable", 29 Tasks) — wird aktuell nur geloggt.
 
-**Ersetzt NICHT** die Live-/Replay-Viewer-Zaps und die Easy2→WebinarGeek- bzw.
-Easy2→Deals-Zaps — die laufen unverändert weiter.
+**Ersetzt NICHT** die Live-/Replay-Viewer-Zaps und den Easy2→Deals-Zap — die
+laufen unverändert weiter.
 
 ## Setup
 
