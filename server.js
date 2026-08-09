@@ -65,13 +65,6 @@ app.get("/health", (_req, res) => res.json({ ok: true }));
 app.get("/webhooks/webinargeek", (_req, res) => res.status(200).json({ ok: true }));
 app.head("/webhooks/webinargeek", (_req, res) => res.sendStatus(200));
 
-function computeHex(secret, body) {
-  return crypto.createHmac("sha256", secret).update(body).digest("hex");
-}
-function computeBase64(secret, body) {
-  return crypto.createHmac("sha256", secret).update(body).digest("base64");
-}
-
 function safeEqual(a, b) {
   const bufA = Buffer.from(a);
   const bufB = Buffer.from(b);
@@ -81,32 +74,40 @@ function safeEqual(a, b) {
 
 // Generische Signatur-Pruefung fuer beide Webhooks (WebinarGeek + Easy2). Beide
 // Anbieter dokumentieren den genauen Header-Namen/Format nicht zuverlaessig -
-// deshalb pruefen wir mehrere plausible Kandidaten-Header und -Formate, und
-// loggen bei Fehlschlag ALLE Header + die selbst berechneten Signaturen zum
-// Abgleich, bis der exakte Header/Format einmal real bestaetigt ist (siehe
-// README "Offener Punkt: exakter Event-Name" fuer das gleiche Muster bei WG).
+// deshalb pruefen wir mehrere plausible Kandidaten-Header und Hash-Algorithmen,
+// und loggen bei Fehlschlag ALLE Header + die selbst berechneten Signaturen zum
+// Abgleich. Fuer Easy2 am 2026-08-08 real bestaetigt: Header `X-Webhook-Signature`,
+// Algorithmus HMAC-**SHA512** (128 Hex-Zeichen) - nicht SHA256 wie urspruenglich
+// angenommen. WebinarGeeks Format ist weiterhin nicht real bestaetigt, deshalb
+// bleiben dort beide Algorithmen als Kandidaten drin.
 function verifySignatureGeneric(req, secret, label) {
   if (!secret) return true; // s.o. - bewusst nur fuer lokales Testen
 
   const candidates = [
+    req.get("X-Webhook-Signature"), // Easy2, real bestaetigt 2026-08-08
     req.get("Signature"),
     req.get("X-Webinargeek-Signature"),
     req.get("X-Easy2-Signature"),
-    req.get("X-Webhook-Signature"),
     req.get("X-Signature"),
     req.get("X-Hub-Signature-256"),
     req.get("X-Hub-Signature"),
   ].filter(Boolean);
 
-  const hex = computeHex(secret, req.rawBody);
-  const base64 = computeBase64(secret, req.rawBody);
-  const validValues = new Set([hex, base64, `sha256=${hex}`, `sha256=${base64}`]);
+  const validValues = new Set();
+  for (const algo of ["sha512", "sha256"]) {
+    const hex = crypto.createHmac(algo, secret).update(req.rawBody).digest("hex");
+    const base64 = crypto.createHmac(algo, secret).update(req.rawBody).digest("base64");
+    validValues.add(hex);
+    validValues.add(base64);
+    validValues.add(`${algo}=${hex}`);
+    validValues.add(`${algo}=${base64}`);
+  }
 
   const matched = candidates.some((c) => [...validValues].some((v) => v.length === c.length && safeEqual(v, c)));
 
   if (!matched) {
     console.warn(`[${label}] Signatur-Check fehlgeschlagen. Alle Header:`, JSON.stringify(req.headers));
-    console.warn(`[${label}] erwartet hex:`, hex, "| base64:", base64);
+    console.warn(`[${label}] erwartete Werte:`, JSON.stringify([...validValues]));
   }
   return matched;
 }
@@ -167,15 +168,20 @@ app.post("/webhooks/easy2", async (req, res) => {
   }
 
   const body = req.body || {};
-  const { event } = body;
+  // Real bestaetigt 2026-08-08: Easy2 schickt den Event-Namen NICHT im Body,
+  // sondern im Header "X-Webhook-Topic" (Body enthaelt nur die Nutzlast, z.B.
+  // {website, contact, formName, formValues} bei form_submitted). Body.event
+  // bleibt als Fallback drin, falls Easy2 das Format je aendert.
+  const event = req.get("X-Webhook-Topic") || body.event;
   // Volles Payload IMMER loggen (auch bei bekannten Events) - Webhook-Form von
-  // Easy2 ist bisher NICHT an einem echten Event verifiziert, siehe lib/leadMagnet.js.
+  // Easy2 war bis 2026-08-08 nicht an einem echten Event verifiziert, siehe
+  // lib/leadMagnet.js.
   console.log(`[easy2-webhook] event="${event}" payload:`, JSON.stringify(body));
 
   try {
     if (event === "form_submitted") {
-      // Easy2 schickt beim Contact-Objekt vermutlich entweder das Contact direkt
-      // oder unter "contact"/"data" verschachtelt - beide Faelle abdecken.
+      // Real bestaetigtes Payload-Format: Contact steckt unter body.contact
+      // (nicht direkt im Body wie urspruenglich angenommen).
       const contact = body.contact || body.data || body;
       const result = await processFormSubmitted(contact);
       console.log(`[easy2-webhook] form_submitted ok:`, result);
