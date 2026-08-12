@@ -15,6 +15,10 @@ const {
   EASY2_WEBINAR_SIGNUP_LIST_ID = "238677122",
   AIRTABLE_TOKEN,
   AIRTABLE_BASE_ID,
+  // Shared Secret fuer POST /register-lead (von der eigenen Landing Page
+  // shift.yogini-glow.de aufgerufen, oeffentlich erreichbar). Ohne dieses
+  // Secret laeuft der Endpoint, aber OHNE Absender-Pruefung - siehe Warnung unten.
+  REGISTER_LEAD_SECRET,
   // Komma-getrennte Liste erlaubter Event-Namen fuer "New registration".
   // WebinarGeeks Doku nennt als Beispiel-Payload "webinar_subscribed" - bis der erste
   // echte Webhook durch ist, decken wir gaengige Varianten ab und LOGGEN jedes
@@ -44,6 +48,12 @@ if (!WEBINARGEEK_API_TOKEN) {
     "WARNUNG: WEBINARGEEK_API_TOKEN ist nicht gesetzt - Webinar-Anmeldungen ueber " +
       "die API (Ersatz fuer 'Easy2 to Webinargeek Anmeldung') werden NICHT verarbeitet, " +
       "nur geloggt."
+  );
+}
+if (!REGISTER_LEAD_SECRET) {
+  console.warn(
+    "WARNUNG: REGISTER_LEAD_SECRET ist nicht gesetzt - /register-lead nimmt Requests " +
+      "von JEDEM Absender an. Nur fuer lokales Testen akzeptabel, niemals so live schalten."
   );
 }
 const EASY2_WEBINAR_SIGNUP_LISTS = new Set(
@@ -238,6 +248,49 @@ app.post("/webhooks/easy2", async (req, res) => {
       error: err?.message,
     });
     return res.status(500).json({ error: "processing failed" });
+  }
+});
+
+/* ============================================================
+   REGISTER-LEAD  (von der eigenen Landing Page shift.yogini-glow.de)
+   ============================================================
+   Ersetzt fuer diesen Funnel den Umweg ueber Easy2: die Landing Page nimmt
+   die Anmeldung selbst entgegen und ruft diesen Endpoint direkt auf, statt
+   ueber ein Easy2-Formular zu gehen. Registriert trotzdem bei WebinarGeek
+   UND Easy2 (Tag), damit beide Systeme wie gewohnt befuellt bleiben - siehe
+   lib/webinarRegistration.js::registerForNextBroadcast. */
+app.post("/register-lead", async (req, res) => {
+  if (REGISTER_LEAD_SECRET) {
+    const provided = req.get("X-Internal-Secret") || "";
+    if (!safeEqual(provided, REGISTER_LEAD_SECRET)) {
+      console.warn("[register-lead] ungueltiges/fehlendes Secret - abgelehnt.");
+      return res.status(401).json({ error: "invalid secret" });
+    }
+  }
+
+  const { firstname, email, utm } = req.body || {};
+  const cleanEmail = (email || "").trim();
+  if (!cleanEmail) {
+    return res.status(400).json({ error: "email fehlt" });
+  }
+  console.log(`[register-lead] Anfrage fuer ${cleanEmail}, utm:`, JSON.stringify(utm || {}));
+
+  if (!WEBINARGEEK_API_TOKEN) {
+    console.log(`[register-lead] WEBINARGEEK_API_TOKEN fehlt - nur geloggt, keine Registrierung:`, cleanEmail);
+    return res.status(200).json({ skipped: true, reason: "no WEBINARGEEK_API_TOKEN" });
+  }
+
+  try {
+    const result = await registerForNextBroadcast({ email: cleanEmail, name: firstname }, { utm });
+    console.log(`[register-lead] ok:`, result);
+    return res.status(200).json({ ok: true, ...result });
+  } catch (err) {
+    await alertFailure("Registrierung ueber shift.yogini-glow.de (register-lead) fehlgeschlagen", {
+      email: cleanEmail,
+      error: err?.message,
+    });
+    // 500, damit ein Retry auf Landing-Page-Seite (falls je gebaut) erkennt, dass es fehlschlug.
+    return res.status(500).json({ error: "registration failed" });
   }
 });
 
