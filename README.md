@@ -64,6 +64,26 @@ Fehlt das Feld `funnel`, gilt `shift` — die Shift-Landingpage funktioniert als
 unverändert weiter. Ein **unbekannter** Wert führt bewusst zu HTTP 400, damit ein
 Tippfehler nicht still B2C-Leads für das B2B-Webinar anmeldet.
 
+### `GET /next-broadcast?funnel=path` — Termin-Auskunft für die Landingpages
+
+Beantwortet „wann ist der nächste Termin von Funnel X?" — aus **derselben** Quelle
+(`findNextBroadcast()`), aus der auch die Registrierung selbst ihren Termin nimmt. Damit können
+angezeigter und tatsächlich gebuchter Termin nicht auseinanderlaufen.
+
+Antwort: `{ funnel, webinarId, broadcastId, broadcastDate }` (`broadcastDate` in Unix-Sekunden).
+Gleiches Shared Secret wie `/register-lead` (Header `X-Internal-Secret`); unbekannter `funnel` →
+HTTP 400, fehlendes API-Token → 503.
+
+Die Antwort ist **gecacht** (`NEXT_BROADCAST_TTL_MS`, Default 10 Min), sonst wäre jeder
+Seitenaufruf ein WebinarGeek-API-Call. Schlägt der Abruf fehl und liegt ein abgelaufener
+Cache-Eintrag vor, wird dieser mit `stale: true` zurückgegeben statt eines Fehlers — ein leicht
+veralteter, aber real existierender Termin ist besser als eine Landingpage ohne Datum.
+
+Hintergrund: Ein hartkodierter Termin im HTML ist in diesem Projekt dreimal still veraltet
+(zuletzt bewarb `live-event.yogini-glow.de` einen Termin, der einen Monat vorbei war, während der
+Countdown dauerhaft `00T:00Std` zeigte). `The-Yogini-Path` holt seine Datums-Angaben jetzt von
+hier — siehe dort `server/eventDate.js`.
+
 **Warum getrennte Tag-Prefixes:** Der Easy2-Tag ist der Anker für Nurture-Mails
 und den Call-Buchungsflow. Bei gemeinsamer Konvention wären B2C- und
 B2B-Anmeldungen in Easy2 nur noch am Termindatum unterscheidbar — die B2B-Strecke

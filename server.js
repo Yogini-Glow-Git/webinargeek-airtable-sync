@@ -2,7 +2,7 @@ import express from "express";
 import crypto from "node:crypto";
 import { processRegistration } from "./lib/registration.js";
 import { processFormSubmitted } from "./lib/leadMagnet.js";
-import { registerForNextBroadcast, resolveFunnel } from "./lib/webinarRegistration.js";
+import { registerForNextBroadcast, resolveFunnel, findNextBroadcast } from "./lib/webinarRegistration.js";
 import { alertFailure } from "./lib/alert.js";
 
 const {
@@ -315,6 +315,80 @@ app.post("/register-lead", async (req, res) => {
     // 500, damit die Landing Page den Fehlschlag erkennt (registrationFailed-Flag)
     // und der Person keinen erfundenen Termin vorspiegelt.
     return res.status(500).json({ error: "registration failed" });
+  }
+});
+
+/* ============================================================
+   NEXT-BROADCAST  (Termin-Auskunft fuer die Landing Pages)
+   ============================================================
+   Damit die Landingpages ihre Datums-Angaben ("LIVE am Sonntag, 11.10. um
+   11:00 Uhr", Countdown, Kalender-Fallback) nicht mehr hartkodiert im HTML
+   tragen muessen. Genau das ist in diesem Projekt schon dreimal still
+   veraltet - zuletzt bewarb live-event.yogini-glow.de einen Termin, der einen
+   Monat vorbei war, und der Countdown zeigte dauerhaft 00T:00Std.
+
+   Dieser Service kennt WebinarGeek ohnehin, also beantwortet er die Frage
+   "wann ist der naechste Termin von Funnel X?" zentral - dieselbe Quelle, aus
+   der auch die Registrierung selbst ihren Termin nimmt (findNextBroadcast).
+   Damit KANN Anzeige und tatsaechliche Anmeldung nicht mehr auseinanderlaufen.
+
+   Antwort: { funnel, webinarId, broadcastId, broadcastDate }  (Unix-Sekunden)
+
+   Gecacht, weil das pro Seitenaufruf sonst ein WebinarGeek-API-Call waere.
+   Bei einem API-Fehler wird bewusst ein abgelaufener Cache-Eintrag
+   weitergegeben (`stale: true`) statt ein Fehler: ein leicht veralteter, aber
+   real existierender Termin ist besser als eine Landing Page ohne Datum. */
+const NEXT_BROADCAST_TTL_MS = Number(process.env.NEXT_BROADCAST_TTL_MS || 10 * 60 * 1000);
+const nextBroadcastCache = new Map(); // funnelKey -> { payload, fetchedAt }
+
+app.get("/next-broadcast", async (req, res) => {
+  // Gleiches Shared Secret wie /register-lead, weil derselbe Aufrufer (der
+  // Landing-Page-Server) es ohnehin schon mitschickt. Ist keins konfiguriert,
+  // bleibt der Endpoint offen - der Termin ist ohnehin oeffentliche Information,
+  // das Secret schuetzt hier vor allem gegen fremden API-Verbrauch.
+  if (REGISTER_LEAD_SECRET) {
+    const provided = req.get("X-Internal-Secret") || "";
+    if (!safeEqual(provided, REGISTER_LEAD_SECRET)) {
+      console.warn("[next-broadcast] ungueltiges/fehlendes Secret - abgelehnt.");
+      return res.status(401).json({ error: "invalid secret" });
+    }
+  }
+
+  let funnelConfig;
+  try {
+    funnelConfig = resolveFunnel(req.query.funnel);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+
+  if (!WEBINARGEEK_API_TOKEN) {
+    return res.status(503).json({ error: "no WEBINARGEEK_API_TOKEN" });
+  }
+
+  const cached = nextBroadcastCache.get(funnelConfig.key);
+  if (cached && Date.now() - cached.fetchedAt < NEXT_BROADCAST_TTL_MS) {
+    return res.status(200).json({ ...cached.payload, cached: true });
+  }
+
+  try {
+    const broadcast = await findNextBroadcast(funnelConfig.webinarId);
+    const payload = {
+      funnel: funnelConfig.key,
+      webinarId: funnelConfig.webinarId,
+      broadcastId: broadcast.id,
+      broadcastDate: broadcast.date,
+    };
+    nextBroadcastCache.set(funnelConfig.key, { payload, fetchedAt: Date.now() });
+    return res.status(200).json(payload);
+  } catch (err) {
+    if (cached) {
+      console.warn(
+        `[next-broadcast] Abruf fuer ${funnelConfig.key} fehlgeschlagen (${err?.message}) - liefere veralteten Cache-Eintrag.`
+      );
+      return res.status(200).json({ ...cached.payload, cached: true, stale: true });
+    }
+    console.warn(`[next-broadcast] Abruf fuer ${funnelConfig.key} fehlgeschlagen:`, err?.message);
+    return res.status(502).json({ error: err?.message || "lookup failed" });
   }
 });
 
