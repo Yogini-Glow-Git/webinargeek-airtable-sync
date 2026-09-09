@@ -2,7 +2,7 @@ import express from "express";
 import crypto from "node:crypto";
 import { processRegistration } from "./lib/registration.js";
 import { processFormSubmitted } from "./lib/leadMagnet.js";
-import { registerForNextBroadcast } from "./lib/webinarRegistration.js";
+import { registerForNextBroadcast, resolveFunnel } from "./lib/webinarRegistration.js";
 import { alertFailure } from "./lib/alert.js";
 
 const {
@@ -252,13 +252,23 @@ app.post("/webhooks/easy2", async (req, res) => {
 });
 
 /* ============================================================
-   REGISTER-LEAD  (von der eigenen Landing Page shift.yogini-glow.de)
+   REGISTER-LEAD  (von den eigenen Landing Pages)
    ============================================================
-   Ersetzt fuer diesen Funnel den Umweg ueber Easy2: die Landing Page nimmt
+   Ersetzt fuer diese Funnel den Umweg ueber Easy2: die Landing Page nimmt
    die Anmeldung selbst entgegen und ruft diesen Endpoint direkt auf, statt
    ueber ein Easy2-Formular zu gehen. Registriert trotzdem bei WebinarGeek
    UND Easy2 (Tag), damit beide Systeme wie gewohnt befuellt bleiben - siehe
-   lib/webinarRegistration.js::registerForNextBroadcast. */
+   lib/webinarRegistration.js::registerForNextBroadcast.
+
+   Aufrufer (Stand 2026-09-09):
+     shift.yogini-glow.de       -> funnel "shift" (Default, schickt kein Feld)
+     live-event.yogini-glow.de  -> funnel "path"
+
+   Das optionale Body-Feld `funnel` entscheidet, fuer WELCHES Webinar registriert
+   und welcher Easy2-Tag-Prefix gesetzt wird. Fehlt es, gilt "shift" - dadurch
+   bleibt die bestehende Shift-Landing-Page ohne Aenderung funktionsfaehig. Ein
+   unbekannter Wert fuehrt bewusst zu HTTP 400 statt zu einer stillen
+   Registrierung im falschen Funnel. */
 app.post("/register-lead", async (req, res) => {
   if (REGISTER_LEAD_SECRET) {
     const provided = req.get("X-Internal-Secret") || "";
@@ -268,12 +278,21 @@ app.post("/register-lead", async (req, res) => {
     }
   }
 
-  const { firstname, email, utm } = req.body || {};
+  const { firstname, email, utm, funnel } = req.body || {};
   const cleanEmail = (email || "").trim();
   if (!cleanEmail) {
     return res.status(400).json({ error: "email fehlt" });
   }
-  console.log(`[register-lead] Anfrage fuer ${cleanEmail}, utm:`, JSON.stringify(utm || {}));
+
+  let funnelConfig;
+  try {
+    funnelConfig = resolveFunnel(funnel);
+  } catch (err) {
+    console.warn(`[register-lead] ${err.message} (email ${cleanEmail}) - abgelehnt.`);
+    return res.status(400).json({ error: err.message });
+  }
+
+  console.log(`[register-lead] Anfrage fuer ${cleanEmail}, funnel=${funnelConfig.key}, utm:`, JSON.stringify(utm || {}));
 
   if (!WEBINARGEEK_API_TOKEN) {
     console.log(`[register-lead] WEBINARGEEK_API_TOKEN fehlt - nur geloggt, keine Registrierung:`, cleanEmail);
@@ -281,15 +300,20 @@ app.post("/register-lead", async (req, res) => {
   }
 
   try {
-    const result = await registerForNextBroadcast({ email: cleanEmail, name: firstname }, { utm });
+    const result = await registerForNextBroadcast(
+      { email: cleanEmail, name: firstname },
+      { utm, funnel: funnelConfig.key }
+    );
     console.log(`[register-lead] ok:`, result);
     return res.status(200).json({ ok: true, ...result });
   } catch (err) {
-    await alertFailure("Registrierung ueber shift.yogini-glow.de (register-lead) fehlgeschlagen", {
+    await alertFailure(`Registrierung ueber Landing Page (register-lead, funnel ${funnelConfig.key}) fehlgeschlagen`, {
       email: cleanEmail,
+      funnel: funnelConfig.key,
       error: err?.message,
     });
-    // 500, damit ein Retry auf Landing-Page-Seite (falls je gebaut) erkennt, dass es fehlschlug.
+    // 500, damit die Landing Page den Fehlschlag erkennt (registrationFailed-Flag)
+    // und der Person keinen erfundenen Termin vorspiegelt.
     return res.status(500).json({ error: "registration failed" });
   }
 });

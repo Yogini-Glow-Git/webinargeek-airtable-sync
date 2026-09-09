@@ -40,6 +40,39 @@ Finanz-Dashboard-Projekt) durch direkte Webhook-Empfänger auf einem Service:
 **Ersetzt NICHT** die Live-/Replay-Viewer-Zaps und den Easy2→Deals-Zap — die
 laufen unverändert weiter.
 
+## `POST /register-lead` — die eigenen Landingpages
+
+Wird direkt von den selbst gehosteten Landingpages aufgerufen (statt über ein
+Easy2-Formular), geschützt per Shared Secret im Header `X-Internal-Secret`
+(`REGISTER_LEAD_SECRET`). Registriert bei WebinarGeek **und** setzt den
+Easy2-Tag; der Airtable-Lead entsteht daraufhin wie immer über WebinarGeeks
+eigenen `/webhooks/webinargeek`.
+
+Body: `{ firstname, email, utm: {source, medium, campaign, content, term}, funnel }`
+Antwort: `{ ok, funnel, webinarId, broadcastId, broadcastDate, subscriptionId, watchLink, easy2Tag }`
+— `watchLink` ist der persönliche WebinarGeek-Zugangslink, den die Danke-Seite
+für ihre Kalender-Buttons braucht.
+
+### Zwei Funnel, zwei Zielgruppen (seit 2026-09-09)
+
+| `funnel` | Webinar | WG-Id | Landing Page | Easy2-Tag |
+|---|---|---|---|---|
+| `shift` (Default) | Yoga Shift 2026 | `517362` | `shift.yogini-glow.de` | `Web_{Datum}_angemeldet` |
+| `path` | The Yogini Path | `583070` | `live-event.yogini-glow.de` | `Path_{Datum}_angemeldet` |
+
+Fehlt das Feld `funnel`, gilt `shift` — die Shift-Landingpage funktioniert also
+unverändert weiter. Ein **unbekannter** Wert führt bewusst zu HTTP 400, damit ein
+Tippfehler nicht still B2C-Leads für das B2B-Webinar anmeldet.
+
+**Warum getrennte Tag-Prefixes:** Der Easy2-Tag ist der Anker für Nurture-Mails
+und den Call-Buchungsflow. Bei gemeinsamer Konvention wären B2C- und
+B2B-Anmeldungen in Easy2 nur noch am Termindatum unterscheidbar — die B2B-Strecke
+würde also auch B2C-Leads bearbeiten. Der Prefix hängt am **Webinar**, nicht am
+Anmeldeweg: `processRegistration()` leitet ihn über `funnelForWebinarId()` aus
+`webinar.id` im Webhook-Payload ab, damit auch Direkt-Registrierungen bei
+WebinarGeek (`registration_source: "api"`) den zielgruppenrichtigen Tag bekommen.
+Alle Ids/Prefixes sind per ENV überschreibbar (siehe `.env.example`).
+
 ## Setup
 
 ```bash
