@@ -37,8 +37,10 @@ Finanz-Dashboard-Projekt) durch direkte Webhook-Empfänger auf einem Service:
   - Noch NICHT gebaut: `booking_created` → Calls (ersetzt "Easy2 Termin
     Webinartermin to Airtable", 29 Tasks) — wird aktuell nur geloggt.
 
-**Ersetzt NICHT** die Live-/Replay-Viewer-Zaps und den Easy2→Deals-Zap — die
-laufen unverändert weiter.
+**Ersetzt NICHT** die Live-/Replay-Viewer-Zaps — die laufen unverändert weiter.
+
+**Easy2→Deals-Zap (`order_created`):** Handler gebaut, Default-Modus `shadow` (nur
+loggen, nichts schreiben), siehe `docs/easy2-orders-cutover.md`. Zap läuft weiter.
 
 ## `POST /register-lead` — die eigenen Landingpages
 

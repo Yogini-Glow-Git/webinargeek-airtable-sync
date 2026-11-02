@@ -4,6 +4,8 @@ import { processRegistration } from "./lib/registration.js";
 import { processFormSubmitted } from "./lib/leadMagnet.js";
 import { registerForNextBroadcast, resolveFunnel, findNextBroadcast } from "./lib/webinarRegistration.js";
 import { alertFailure } from "./lib/alert.js";
+import { processOrderCreated } from "./lib/orders.js";
+import { orderDeps } from "./lib/orderDeps.js";
 
 const {
   PORT = 3000,
@@ -24,6 +26,9 @@ const {
   // echte Webhook durch ist, decken wir gaengige Varianten ab und LOGGEN jedes
   // unbekannte Event laut, statt es zu verwerfen. Nach dem ersten echten Test ggf.
   // per ENV (ohne Code-Aenderung) auf den tatsaechlichen Namen einschraenken.
+  // Easy2 order_created -> Deals (ersetzt den Zap "Easy2 New Order -> Deals"):
+  // "off" | "shadow" (Default: liest nur, loggt [order-shadow], schreibt NICHTS) | "live".
+  EASY2_ORDERS_MODE = "shadow",
   WG_REGISTRATION_EVENTS = "webinar_subscribed,participant.registered,subscription_created,registration_created",
 } = process.env;
 
@@ -238,6 +243,11 @@ app.post("/webhooks/easy2", async (req, res) => {
       // erst nach echtem Payload-Abgleich verifizieren.
       console.log(`[easy2-webhook] booking_created noch nicht verarbeitet (Calls-Logik folgt) - nur geloggt.`);
       return res.status(200).json({ ignored: true, reason: "booking_created not yet implemented" });
+    }
+
+    if (event === "order_created") {
+      const result = await processOrderCreated(body, { mode: EASY2_ORDERS_MODE, deps: orderDeps });
+      return res.status(200).json({ ok: true, ...result });
     }
 
     console.log(`[easy2-webhook] ignoriere unbehandeltes event="${event}"`);
