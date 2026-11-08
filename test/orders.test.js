@@ -158,6 +158,27 @@ test("Order nicht completed -> skip", () => {
   assert.equal(planOrder(parseOrder(o), [deal65_vor160(null)]).action, "skip");
 });
 
+test("Order pending (Ueberweisung vor Zahlungseingang) -> update wie completed", () => {
+  const o = structuredClone(o160); o.status = "pending";
+  const plan = planOrder(parseOrder(o), [deal65_vor160("bn_einmalzahlung_1990")]);
+  assert.equal(plan.action, "update");
+  assert.equal(plan.writes.total_amount, 1990);
+});
+
+test("Betrags-Guard: Fehlbestellung (2690 ohne Code) bei Deal mit bn_einmalzahlung_1990 -> skip, keine Writes", () => {
+  const o = structuredClone(o160);
+  o.total = 2690; o.subTotal = 2690; o.discountCode = null; o.discountType = null; o.discountAmount = 0;
+  const plan = planOrder(parseOrder(o), [deal65_vor160("bn_einmalzahlung_1990")]);
+  assert.equal(plan.action, "skip");
+  assert.equal(plan.writes, undefined);
+  assert.match(plan.warnings[0], /passt nicht zum payment_model/);
+});
+
+test("Betrags-Guard: passende Order bei gleichem Deal -> update (richtige Order nach Fehlversuch)", () => {
+  const plan = planOrder(parseOrder(o160), [deal65_vor160("bn_einmalzahlung_1990")]);
+  assert.equal(plan.action, "update");
+});
+
 // ---- processOrderCreated: Shadow schreibt nichts, live schreibt ----
 function mkDeps(deals) {
   const calls = { updates: [], alerts: [], fetched: [] };
